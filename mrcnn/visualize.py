@@ -20,12 +20,8 @@ from matplotlib import patches,  lines
 from matplotlib.patches import Polygon
 import IPython.display
 
-# Root directory of the project
-ROOT_DIR = os.path.abspath("../")
-
 # Import Mask RCNN
-sys.path.append(ROOT_DIR)  # To find local version of the library
-from mrcnn import utils
+from . import utils
 
 
 ############################################################
@@ -165,7 +161,6 @@ def display_instances(image, boxes, masks, class_ids, class_names,
     ax.imshow(masked_image.astype(np.uint8))
     if auto_show:
         plt.show()
-
 
 def display_differences(image,
                         gt_box, gt_class_id, gt_mask,
