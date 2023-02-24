@@ -13,20 +13,19 @@ Usage: import the module (see Jupyter notebooks for examples), or run from
        the command line as such:
 
     # Train a new model starting from pre-trained COCO weights
-    python3 coco.py train --dataset=/path/to/coco/ --model=coco
+    python3 f1.py train --dataset=/path/to/f1/ --model=coco
 
     # Continue training a model that you had trained earlier
-    python3 coco.py train --dataset=/path/to/coco/ --model=/path/to/weights.h5
+    python3 f1.py train --dataset=/path/to/f1/ --model=/path/to/weights.h5
 
     # Continue training the last model you trained
-    python3 coco.py train --dataset=/path/to/coco/ --model=last
+    python3 f1.py train --dataset=/path/to/f1/ --model=last
 
-    # Run COCO evaluatoin on the last model you trained
-    python3 coco.py evaluate --dataset=/path/to/coco/ --model=last
+    # Run video inference with the last model you trained
+    python3 f1.py infer --video=/path/to/video --model=last
 """
 
 import os
-import time
 import numpy as np
 import imgaug
 
@@ -92,7 +91,7 @@ class F1Dataset(utils.Dataset):
         """Load a subset of the F1 dataset.
         dataset_dir: The root directory of the F1 dataset.
         subset: What to load (train, val)
-        return_coco: If True, returns the F1 object.
+        return_f1: If True, returns the f1 object.
         """
         f1 = COCO("{}/{}/_annotations.coco.json".format(dataset_dir, subset))
         self.anns = f1.anns
@@ -104,7 +103,6 @@ class F1Dataset(utils.Dataset):
         # Add images
         image_dir = "{}/{}".format(dataset_dir, subset)
         image_ids = list(f1.imgs.keys())
-
         for i in image_ids:
             self.add_image(
                 "f1", image_id=i,
@@ -112,8 +110,8 @@ class F1Dataset(utils.Dataset):
                 width=f1.imgs[i]["width"],
                 height=f1.imgs[i]["height"],
                 annotations=self.loadAnns(f1.getAnnIds(
-                    imgIds=[i], 
-                    catIds=[i for i in range(1, 11)], 
+                    imgIds=[i],
+                    catIds=[i for i in range(1, 11)],
                     iscrowd=None)))
 
         if return_f1:
@@ -160,7 +158,8 @@ class F1Dataset(utils.Dataset):
                     # For crowd masks, annToMask() sometimes returns a mask
                     # smaller than the given dimensions. If so, resize it.
                     if m.shape[0] != image_info["height"] or m.shape[1] != image_info["width"]:
-                        m = np.ones([image_info["height"], image_info["width"]], dtype=bool)
+                        m = np.ones(
+                            [image_info["height"], image_info["width"]], dtype=bool)
                 instance_masks.append(m)
                 class_ids.append(class_id)
 
@@ -173,7 +172,8 @@ class F1Dataset(utils.Dataset):
             # Call super class to return an empty mask
             return super(F1Dataset, self).load_mask(image_id)
 
-    # taken from pycocotools/coco.py and modified to calculate segmentations from bbox
+    # taken from pycocotools/coco.py and modified to calculate segmentation masks from bbox.
+    # this is necessary because the F1 dataset does not provide segmentation masks.
     def loadAnns(self, ids=[]):
         """
         Load anns with the specified ids.
@@ -249,90 +249,6 @@ class F1Dataset(utils.Dataset):
         m = maskUtils.decode(rle)
         return m
 
-
-############################################################
-#  COCO Evaluation
-############################################################
-
-def build_coco_results(dataset, image_ids, rois, class_ids, scores, masks):
-    """Arrange resutls to match COCO specs in http://cocodataset.org/#format
-    """
-    # If no results, return an empty list
-    if rois is None:
-        return []
-
-    results = []
-    for image_id in image_ids:
-        # Loop through detections
-        for i in range(rois.shape[0]):
-            class_id = class_ids[i]
-            score = scores[i]
-            bbox = np.around(rois[i], 1)
-            mask = masks[:, :, i]
-
-            result = {
-                "image_id": image_id,
-                "category_id": dataset.get_source_class_id(class_id, "f1"),
-                "bbox": [bbox[1], bbox[0], bbox[3] - bbox[1], bbox[2] - bbox[0]],
-                "score": score,
-                "segmentation": maskUtils.encode(np.asfortranarray(mask))
-            }
-            results.append(result)
-    return results
-
-
-def evaluate_coco(model, dataset, coco, eval_type="bbox", limit=0, image_ids=None):
-    """Runs official COCO evaluation.
-    dataset: A Dataset object with valiadtion data
-    eval_type: "bbox" or "segm" for bounding box or segmentation evaluation
-    limit: if not 0, it's the number of images to use for evaluation
-    """
-    # Pick COCO images from the dataset
-    image_ids = image_ids or dataset.image_ids
-
-    # Limit to a subset
-    if limit:
-        image_ids = image_ids[:limit]
-
-    # Get corresponding COCO image IDs.
-    coco_image_ids = [dataset.image_info[id]["id"] for id in image_ids]
-
-    t_prediction = 0
-    t_start = time.time()
-
-    results = []
-    for i, image_id in enumerate(image_ids):
-        # Load image
-        image = dataset.load_image(image_id)
-
-        # Run detection
-        t = time.time()
-        r = model.detect([image], verbose=0)[0]
-        t_prediction += (time.time() - t)
-
-        # Convert results to COCO format
-        # Cast masks to uint8 because COCO tools errors out on bool
-        image_results = build_coco_results(dataset, coco_image_ids[i:i + 1],
-                                           r["rois"], r["class_ids"],
-                                           r["scores"],
-                                           r["masks"].astype(np.uint8))
-        results.extend(image_results)
-
-    # Load results. This modifies results with additional attributes.
-    coco_results = coco.loadRes(results)
-
-    # Evaluate
-    cocoEval = COCOeval(coco, coco_results, eval_type)
-    cocoEval.params.imgIds = coco_image_ids
-    cocoEval.evaluate()
-    cocoEval.accumulate()
-    cocoEval.summarize()
-
-    print("Prediction time: {}. Average {}/image".format(
-        t_prediction, t_prediction / len(image_ids)))
-    print("Total time: ", time.time() - t_start)
-
-
 ############################################################
 #  Training and Inference
 ############################################################
@@ -348,11 +264,11 @@ if __name__ == '__main__':
                         metavar="<command>",
                         help="'train' or 'infer' on the F1 dataset")
     parser.add_argument('--dataset', required=False,
-                        metavar="/path/to/coco/",
+                        metavar="/path/to/f1/",
                         help='Directory of the F1 dataset')
     parser.add_argument('--model', required=True,
                         metavar="/path/to/weights.h5",
-                        help="Path to weights .h5 file or 'coco'")
+                        help="Path to weights .h5 file or 'last' or 'coco'")
     parser.add_argument('--logs', required=False,
                         default=DEFAULT_LOGS_DIR,
                         metavar="/path/to/logs/",
@@ -397,7 +313,7 @@ if __name__ == '__main__':
         print("Loading weights ", model_path)
         model.load_weights(model_path, by_name=True,
                            exclude=["mrcnn_class_logits", "mrcnn_bbox_fc",
-                                    "mrcnn_bbox", "mrcnn_mask"])  # maybe don't exclude if continuing previous training?
+                                    "mrcnn_bbox", "mrcnn_mask"])
 
         # Training dataset
         dataset_train = F1Dataset()
@@ -413,37 +329,9 @@ if __name__ == '__main__':
         # Right/Left flip 50% of the time
         augmentation = imgaug.augmenters.Fliplr(0.5)
 
-        # *** This training schedule is an example. Update to your needs ***
-
-        # Training - Stage 1
         print("Training network heads")
         model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE,
                     epochs=30,
                     layers='heads',
                     augmentation=augmentation)
-
-        # # Training - Stage 2
-        # # Finetune layers from ResNet stage 4 and up
-        # print("Fine tune Resnet stage 4 and up")
-        # model.train(dataset_train, dataset_val,
-        #             learning_rate=config.LEARNING_RATE,
-        #             epochs=20,
-        #             layers='4+',
-        #             augmentation=augmentation)
-        #
-        # # Training - Stage 3
-        # # Fine tune all layers
-        # print("Fine tune all layers")
-        # model.train(dataset_train, dataset_val,
-        #             learning_rate=config.LEARNING_RATE / 10,
-        #             epochs=30,
-        #             layers='all',
-        #             augmentation=augmentation)
-
-
-
-
-
-
-
